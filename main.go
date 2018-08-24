@@ -1,4 +1,4 @@
-package am2301
+package main
 
 import (
 	"log"
@@ -9,6 +9,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stianeikeland/go-rpio"
 )
+
+var DEBUG bool
 
 type Reading struct {
 	Temperature      float64
@@ -74,40 +76,52 @@ func GetReading(pin rpio.Pin, mode rpio.Mode) (Reading, error) {
 		}
 	}
 
-	var reads [5]uint64
+	var reads [5]uint8
+	var checksum uint8
 	for read_counter := 0; read_counter < 5; read_counter++ {
-		for exponent, read := 7, 0; exponent >= 0; exponent-- {
+		var read uint8
+		read = 0
+		for exponent := 7; exponent >= 0; exponent-- {
 			timeTilChange, err := waitChange(pin, rpio.Low, 500*time.Microsecond)
 			if err != nil {
 				return reading, err
 			}
 
-			readDigit := 0
-
+			var readDigit uint8
+			readDigit = 0
 			if timeTilChange >= 50*time.Microsecond {
 				readDigit = 1
 			}
+			if DEBUG {
+				log.Printf("Read digit %d\n", readDigit)
+			}
 			// read = read + (read_digit * 2^exponent)
-			read = read | (read_digit << exponent)
+			read = read | readDigit<<uint(exponent)
 			if _, err = waitChange(pin, rpio.High, 500*time.Microsecond); err != nil {
 				return reading, err
 			}
 		}
-		reads[read_counter] = uint64(read)
+		reads[read_counter] = read
+		if DEBUG {
+			log.Printf("Got read %d\n", read)
+		}
 	}
 
 	pin.Output()
 	pin.High()
 
 	/* Verify checksum */
-	checksum := reads[0] + reads[1] + reads[2] + reads[3]
+	checksum = reads[0] + reads[1] + reads[2] + reads[3]
+	if DEBUG {
+		log.Printf("checksum: %d\n", checksum)
+	}
 	if checksum != reads[4] {
 		return reading, errors.New("Checksum check failed!")
 	}
 
-	reading.RelativeHumidity = float64((reads[0] << 8) | reads[1])
+	reading.RelativeHumidity = float64((uint64(reads[0]) << 8) | uint64(reads[1]))
 	reading.RelativeHumidity /= 10.0
-	reading.Temperature = float64((reads[2] << 8) | reads[3])
+	reading.Temperature = float64((uint64(reads[2]) << 8) | uint64(reads[3]))
 	reading.Temperature /= 10.0
 
 	if reading.RelativeHumidity > 100.0 || reading.RelativeHumidity < 0.0 {
@@ -128,10 +142,10 @@ func GetRelativeHumidity(pin rpio.Pin) (float64, error) {
 }
 
 func main() {
-	debug := false
-	debugString := os.Getenv("DEBUG")
-	if debugString != "" {
-		debug = true
+	DEBUG = false
+	DEBUGString := os.Getenv("DEBUG")
+	if DEBUGString != "" {
+		DEBUG = true
 	}
 	pinNumberString := os.Getenv("PIN_NUMBER")
 	if pinNumberString == "" {
@@ -141,13 +155,25 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	rpio.Open()
+	if err := rpio.Open(); err != nil {
+		log.Fatal(err)
+	}
 	defer rpio.Close()
 	pin := rpio.Pin(pinNumber)
-	for trial_counter := 0; trial_counter < 10; trial_counter++ {
+	maxTrialsString := os.Getenv("MAX_TRIALS")
+	maxTrials := 10
+	if maxTrialsString != "" {
+		maxTrials, err = strconv.Atoi(maxTrialsString)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	for trial_counter := 0; trial_counter < maxTrials; trial_counter++ {
 		reading, err := GetReading(pin, 1)
-		if err != nil && debug {
-			log.Println(err)
+		if err != nil {
+			if DEBUG {
+				log.Printf("%+v\n", err)
+			}
 			time.Sleep(2 * time.Second)
 		} else {
 			log.Println(reading.Temperature)
